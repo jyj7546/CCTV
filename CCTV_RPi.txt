@@ -1,0 +1,141 @@
+import RPi.GPIO as g
+import time
+import datetime
+import picamera
+import paho.mqtt.publish as publish
+import os
+import sys
+
+import email
+import smtplib
+from email.MIMEMultipart import MIMEMultipart
+from email.MIMEImage import MIMEImage
+from email.MIMEText import MIMEText
+
+from crontab import CronTab
+
+time.sleep(3)
+
+g.setmode(g.BOARD)
+g.setwarnings(False)
+
+TRIG = 38
+ECHO = 40
+
+g.setup(TRIG, g.OUT)
+g.setup(ECHO, g.IN)
+
+my_cron = CronTab(user='pi')
+job = my_cron.new(command='sh /home/pi/Desktop/miniProject/cctv/deleteOldFile.sh')
+job.month.every(1)
+
+camera = picamera.PiCamera()
+
+distance = 0
+
+def sendMail(file):
+    fileCap = file
+    global now
+    now = time.strftime("%c")
+    msg = MIMEMultipart()
+    msg['From'] = 'wjsdudwns319@gmail.com'
+    msg['To'] = 'wjsdudwns429@naver.com'
+    msg['Date'] = now
+    msg['Subject'] = 'Motion Detected'
+    msgText = MIMEText('Please Check Capture Image')
+    msg.attach(msgText)
+
+    fo=open(fileCap,'rb')
+    img = MIMEImage(fo.read())
+    fo.close()
+    img.add_header('Content-Disposition', 'attachment', filename=fileCap)
+    msg.attach(img)
+
+    smtp = smtplib.SMTP('smtp.gmail.com', 587)
+    smtp.ehlo()
+    smtp.starttls()
+    smtp.ehlo()
+    smtp.login('wjsdudwns319@gmail.com', '940319dw')
+    smtp.sendmail('wjsdudwns319@gmail.com', 'wjsdudwns429@naver.com', msg.as_string())
+    print "E-mail Sent.."
+    smtp.quit()
+
+def setBrightness() :
+    # camera brightness setting
+    now = datetime.datetime.now()
+
+    if now.hour >= 6 and now.hour < 9 : # 6,7,8
+        camera.brightness = 60
+    elif now.hour >= 9 and now.hour < 12 : # 9,10,11
+        camera.brightness = 50
+    elif now.hour >= 12 and now.hour < 15 : # 12,13,14
+        camera.brightness = 40
+    elif now.hour >= 15 and now.hour < 18 : # 15,16,17
+        camera.brightness = 50
+    elif now.hour >= 18 and now.hour < 21 : # 18,19,20
+        camera.brightness = 60
+    else : # 21,22,23,24, 1,2,3,4,5
+        camera.brightness = 65
+    print "Present Time: ", now.hour, "\n"
+    print "camera brightness set: ", camera.brightness,"%"
+
+def detect() :
+    g.output(TRIG, False)
+    print "Waiting.."
+    time.sleep(0.1)
+
+    g.output(TRIG, True)
+    time.sleep(0.00001)
+    g.output(TRIG, False)
+
+    while g.input(ECHO) == False :
+        start = time.time()
+    while g.input(ECHO) == True :
+        end = time.time()
+    print "start:" , start , " end:" , end
+
+    duration = end - start
+
+    global distance
+    distance = round(duration * 17150, 2)
+
+def capture() :
+        oldmask = os.umask(000)
+        i = 0
+        print "Movement is deteced. Take a picture.."
+        today = datetime.datetime.now().strftime("%Y.%m.%d")
+        presentTime = datetime.datetime.now().strftime("%Hh%Mm%Ss")
+        path = "/home/pi/Desktop/PiCamPictures/" + str(today) + "/"
+
+        if os.path.exists(path) :
+            pass
+        else :
+            os.mkdir(path, 0777)
+            os.umask(oldmask)
+            print path + " is created.."
+
+        while i < 5 :
+            camera.capture(path + str(presentTime) + "(" + str(i) + ")" + ".jpg")
+            print "capture is saved in " + path + str(presentTime) + "(" + str(i) + ")" + ".jpg"
+            publish.single("jyjMotionDetected", "1", hostname="192.168.0.4") # turn on LED at Node MCU
+            time.sleep(0.05)
+            publish.single("jyjMotionDetected", "0", hostname="192.168.0.4") # turn off LED at Node MCU
+            i += 1
+
+        sendMail (path + str(presentTime) + "(0)" + ".jpg")
+        movementFlag = 0
+
+try :
+        while True :
+                setBrightness()
+                detect()
+
+                print "Distance : " , distance , "cm"
+                if distance > 80 :  #  no detecting
+                        my_cron.write()
+                else :  #  detecting
+                        capture()
+
+except KeyboardInterrupt :
+        camera.close()
+        g.cleanup()
